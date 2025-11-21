@@ -54,9 +54,13 @@ class FantasyPlayerDataCollector:
             print(f"Could not fetch draft data: {e}")
             draft_picks = None
         
+        # Get ADP data for each year
+        print("Fetching ADP data for each year...")
+        adp_data = self.get_adp_for_years(years)
+        
         print(f"Collected stats for {len(seasonal_data)} player-seasons")
         
-        return seasonal_data, weekly_data, draft_picks
+        return seasonal_data, weekly_data, draft_picks, adp_data
     
     def normalize_name(self, name):
         """
@@ -89,6 +93,59 @@ class FantasyPlayerDataCollector:
         except:
             return None
     
+    def get_adp_for_years(self, years):
+        """
+        Fetch ADP data from Fantasy Football Calculator for multiple years
+        
+        Args:
+            years: range of years to fetch ADP for
+        
+        Returns:
+            Dictionary mapping (player_name, year) -> adp
+        """
+        import requests
+        
+        adp_dict = {}
+        
+        for year in years:
+            try:
+                print(f"  Fetching ADP for {year}...")
+                url = "https://fantasyfootballcalculator.com/api/v1/adp/ppr"
+                params = {"teams": 12, "year": year}
+                
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                
+                data = response.json()
+                players = data.get("players", [])
+                
+                if not players:
+                    print(f"  No ADP data for {year}")
+                    continue
+                
+                # Store ADP for each player
+                for p in players:
+                    name = (
+                        p.get("name") or
+                        p.get("player_name") or
+                        (p.get("player", {}) or {}).get("name")
+                    )
+                    adp = p.get("adp")
+                    
+                    if name and adp:
+                        # Normalize name (remove suffixes)
+                        name_normalized = self.normalize_name(name)
+                        adp_dict[(name_normalized, year)] = adp
+                
+                print(f"  Loaded ADP for {len(players)} players in {year}")
+                
+            except Exception as e:
+                print(f"  Could not fetch ADP for {year}: {e}")
+                continue
+        
+        print(f"Total ADP entries: {len(adp_dict)}")
+        return adp_dict
+    
     def combine_data(self, years=range(2015, 2024)):
         """
         Combine Sleeper player info with historical fantasy points
@@ -99,7 +156,7 @@ class FantasyPlayerDataCollector:
             self.get_sleeper_players()
         
         # Get historical stats
-        seasonal_data, weekly_data, draft_picks = self.get_historical_stats(years)
+        seasonal_data, weekly_data, draft_picks, adp_data = self.get_historical_stats(years)
         
         # Use weekly data which has fantasy points
         stats_df = weekly_data.copy()
@@ -181,6 +238,19 @@ class FantasyPlayerDataCollector:
         # Normalize names for better matching
         stats_df['full_name_normalized'] = stats_df['full_name'].apply(self.normalize_name)
         
+        # Add ADP for each player-season if available
+        if adp_data:
+            print("Adding ADP data by year...")
+            stats_df['fantasy_adp'] = stats_df.apply(
+                lambda row: adp_data.get((row['full_name_normalized'], row['season']), 999.0),
+                axis=1
+            )
+            players_with_adp = (stats_df['fantasy_adp'] < 999).sum()
+            print(f"Matched ADP for {players_with_adp} player-season records")
+        else:
+            print("No ADP data available")
+            stats_df['fantasy_adp'] = 999.0
+        
         # Add draft information if available
         if draft_picks is not None and len(draft_picks) > 0:
             print("Adding NFL draft round information...")
@@ -221,7 +291,7 @@ class FantasyPlayerDataCollector:
                         'team', 'position', 'completions', 'attempts', 'passing_yards',
                         'passing_tds', 'interceptions', 'carries', 'rushing_yards',
                         'rushing_tds', 'receptions', 'targets', 'receiving_yards', 'receiving_tds',
-                        'nfl_draft_round']
+                        'nfl_draft_round', 'fantasy_adp']
         
         # Only use columns that exist
         available_stats_columns = [col for col in stats_columns if col in stats_df.columns]
@@ -241,7 +311,7 @@ class FantasyPlayerDataCollector:
         numeric_columns = ['fantasy_points_ppr', 'games', 'completions', 'attempts',
                           'passing_yards', 'passing_tds', 'interceptions', 'carries',
                           'rushing_yards', 'rushing_tds', 'receptions', 'targets',
-                          'receiving_yards', 'receiving_tds', 'nfl_draft_round']
+                          'receiving_yards', 'receiving_tds', 'nfl_draft_round', 'fantasy_adp']
         
         for col in numeric_columns:
             if col in combined.columns:
@@ -269,6 +339,7 @@ class FantasyPlayerDataCollector:
             'season',
             'fantasy_points_ppr',
             'points_per_game',
+            'fantasy_adp',
             'age',
             'is_rookie',
             'nfl_draft_round',
