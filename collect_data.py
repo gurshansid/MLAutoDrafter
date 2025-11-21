@@ -95,11 +95,22 @@ class FantasyPlayerDataCollector:
         # Use weekly data which has fantasy points
         stats_df = weekly_data.copy()
         
-        # Group by player and season to get total fantasy points
+        # Group by player and season to get total fantasy points AND detailed stats
         stats_df = stats_df.groupby(['player_id', 'season']).agg({
-            'fantasy_points': 'sum',
             'fantasy_points_ppr': 'sum',
-            'week': 'count'  # Count weeks = games played
+            'week': 'count',  # Count weeks = games played
+            'completions': 'sum',
+            'attempts': 'sum',
+            'passing_yards': 'sum',
+            'passing_tds': 'sum',
+            'interceptions': 'sum',
+            'carries': 'sum',
+            'rushing_yards': 'sum',
+            'rushing_tds': 'sum',
+            'receptions': 'sum',
+            'targets': 'sum',
+            'receiving_yards': 'sum',
+            'receiving_tds': 'sum'
         }).reset_index()
         
         # Rename week count to games
@@ -166,8 +177,16 @@ class FantasyPlayerDataCollector:
         
         # Use LEFT join from Sleeper data to keep ALL players (including rookies)
         # Merge on normalized names for better matching (handles Jr., Sr., etc.)
+        stats_columns = ['full_name_normalized', 'season', 'fantasy_points_ppr', 'games',
+                        'team', 'position', 'completions', 'attempts', 'passing_yards',
+                        'passing_tds', 'interceptions', 'carries', 'rushing_yards',
+                        'rushing_tds', 'receptions', 'targets', 'receiving_yards', 'receiving_tds']
+        
+        # Only use columns that exist
+        available_stats_columns = [col for col in stats_columns if col in stats_df.columns]
+        
         combined = sleeper_df.merge(
-            stats_df[['full_name_normalized', 'season', 'fantasy_points', 'fantasy_points_ppr', 'games', 'team', 'position']],
+            stats_df[available_stats_columns],
             on='full_name_normalized',
             how='left',
             suffixes=('', '_stats')
@@ -177,10 +196,15 @@ class FantasyPlayerDataCollector:
         current_year = datetime.now().year
         combined['season'] = combined['season'].fillna(current_year)
         
-        # Fill NaN fantasy points with 0 for rookies/players without history
-        combined['fantasy_points'] = combined['fantasy_points'].fillna(0)
-        combined['fantasy_points_ppr'] = combined['fantasy_points_ppr'].fillna(0)
-        combined['games'] = combined['games'].fillna(0)
+        # Fill NaN fantasy points and games with 0 for rookies/players without history
+        numeric_columns = ['fantasy_points_ppr', 'games', 'completions', 'attempts',
+                          'passing_yards', 'passing_tds', 'interceptions', 'carries',
+                          'rushing_yards', 'rushing_tds', 'receptions', 'targets',
+                          'receiving_yards', 'receiving_tds']
+        
+        for col in numeric_columns:
+            if col in combined.columns:
+                combined[col] = combined[col].fillna(0)
         
         # Use Sleeper team if stats team is missing
         if 'team_stats' in combined.columns:
@@ -202,18 +226,21 @@ class FantasyPlayerDataCollector:
             'position',
             'team',
             'season',
-            'fantasy_points',
             'fantasy_points_ppr',
+            'points_per_game',
             'age',
             'is_rookie',
             'games',
             'completions',
+            'attempts',
             'passing_yards',
             'passing_tds',
             'interceptions',
+            'carries',
             'rushing_yards',
             'rushing_tds',
             'receptions',
+            'targets',
             'receiving_yards', 
             'receiving_tds'
         ]
@@ -225,13 +252,20 @@ class FantasyPlayerDataCollector:
         # Don't drop rows with missing fantasy points anymore (keep rookies with 0 points)
         result = result.dropna(subset=['first_name', 'last_name'])
         
+        # Calculate points per game
+        result['points_per_game'] = result.apply(
+            lambda row: row['fantasy_points_ppr'] / row['games'] if row['games'] > 0 else 0,
+            axis=1
+        )
+        result['points_per_game'] = result['points_per_game'].round(2)
+        
         # Fill NaN teams with 'FA' (Free Agent) temporarily
         result['team'] = result['team'].fillna('FA')
         
         # Remove free agents completely
         result = result[result['team'] != 'FA']
         
-        # Sort by name, then season,
+        # Sort by team, then season, then fantasy points
         result = result.sort_values(['first_name', 'last_name', 'season'], ascending=[True, True, False])
         
         # Reset index for clean output
