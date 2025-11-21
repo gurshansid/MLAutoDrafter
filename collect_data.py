@@ -45,9 +45,18 @@ class FantasyPlayerDataCollector:
         # Also need weekly data for fantasy points calculation
         weekly_data = nfl.import_weekly_data(years)
         
+        # Get draft picks data (for NFL draft round info)
+        print("Fetching NFL draft data...")
+        try:
+            draft_picks = nfl.import_draft_picks(years=range(2000, 2025))
+            print(f"Loaded {len(draft_picks)} draft picks")
+        except Exception as e:
+            print(f"Could not fetch draft data: {e}")
+            draft_picks = None
+        
         print(f"Collected stats for {len(seasonal_data)} player-seasons")
         
-        return seasonal_data, weekly_data
+        return seasonal_data, weekly_data, draft_picks
     
     def normalize_name(self, name):
         """
@@ -90,7 +99,7 @@ class FantasyPlayerDataCollector:
             self.get_sleeper_players()
         
         # Get historical stats
-        seasonal_data, weekly_data = self.get_historical_stats(years)
+        seasonal_data, weekly_data, draft_picks = self.get_historical_stats(years)
         
         # Use weekly data which has fantasy points
         stats_df = weekly_data.copy()
@@ -172,6 +181,37 @@ class FantasyPlayerDataCollector:
         # Normalize names for better matching
         stats_df['full_name_normalized'] = stats_df['full_name'].apply(self.normalize_name)
         
+        # Add draft information if available
+        if draft_picks is not None and len(draft_picks) > 0:
+            print("Adding NFL draft round information...")
+            
+            # Create a clean draft lookup with player name
+            draft_lookup = draft_picks[['pfr_player_name', 'round']].copy()
+            draft_lookup['player_name_normalized'] = draft_lookup['pfr_player_name'].apply(self.normalize_name)
+            
+            # Remove duplicates - keep first draft (some players drafted multiple times)
+            draft_lookup = draft_lookup.drop_duplicates(subset=['player_name_normalized'], keep='first')
+            
+            # Merge based on normalized player name
+            stats_df = stats_df.merge(
+                draft_lookup[['player_name_normalized', 'round']],
+                left_on='full_name_normalized',
+                right_on='player_name_normalized',
+                how='left'
+            )
+            
+            # Rename and clean up
+            if 'round' in stats_df.columns:
+                stats_df.rename(columns={'round': 'nfl_draft_round'}, inplace=True)
+                # Fill missing with 0 (undrafted)
+                stats_df['nfl_draft_round'] = stats_df['nfl_draft_round'].fillna(0)
+                print(f"Draft round data added. Players with draft info: {(stats_df['nfl_draft_round'] > 0).sum()}")
+            
+            if 'player_name_normalized' in stats_df.columns:
+                stats_df.drop('player_name_normalized', axis=1, inplace=True)
+        else:
+            print("No draft data available, skipping draft round")
+        
         # Merge the datasets
         print("Merging Sleeper and stats data...")
         
@@ -180,7 +220,8 @@ class FantasyPlayerDataCollector:
         stats_columns = ['full_name_normalized', 'season', 'fantasy_points_ppr', 'games',
                         'team', 'position', 'completions', 'attempts', 'passing_yards',
                         'passing_tds', 'interceptions', 'carries', 'rushing_yards',
-                        'rushing_tds', 'receptions', 'targets', 'receiving_yards', 'receiving_tds']
+                        'rushing_tds', 'receptions', 'targets', 'receiving_yards', 'receiving_tds',
+                        'nfl_draft_round']
         
         # Only use columns that exist
         available_stats_columns = [col for col in stats_columns if col in stats_df.columns]
@@ -200,7 +241,7 @@ class FantasyPlayerDataCollector:
         numeric_columns = ['fantasy_points_ppr', 'games', 'completions', 'attempts',
                           'passing_yards', 'passing_tds', 'interceptions', 'carries',
                           'rushing_yards', 'rushing_tds', 'receptions', 'targets',
-                          'receiving_yards', 'receiving_tds']
+                          'receiving_yards', 'receiving_tds', 'nfl_draft_round']
         
         for col in numeric_columns:
             if col in combined.columns:
@@ -230,6 +271,7 @@ class FantasyPlayerDataCollector:
             'points_per_game',
             'age',
             'is_rookie',
+            'nfl_draft_round',
             'games',
             'completions',
             'attempts',
