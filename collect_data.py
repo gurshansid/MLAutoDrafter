@@ -202,9 +202,6 @@ class FantasyPlayerDataCollector:
         # Calculate age
         sleeper_df['age'] = sleeper_df['birth_date'].apply(self.calculate_age)
         
-        # Determine if rookie (0 years experience)
-        sleeper_df['is_rookie'] = sleeper_df['years_exp'] == 0
-        
         # Filter to fantasy-relevant positions
         sleeper_df = sleeper_df[sleeper_df['position'].isin(['QB', 'RB', 'WR', 'TE'])]
         
@@ -307,6 +304,31 @@ class FantasyPlayerDataCollector:
         current_year = datetime.now().year
         combined['season'] = combined['season'].fillna(current_year)
         
+        # FIXED ROOKIE DETECTION - Determine rookie season based on first appearance
+        print("Determining rookie seasons...")
+        
+        # Get ALL historical data to find true first season (not just the years we're querying)
+        print("  Fetching complete career data to determine true rookie seasons...")
+        all_rosters = nfl.import_seasonal_rosters(range(1999, 2025))
+        all_rosters['full_name_normalized'] = (all_rosters['player_name']).apply(self.normalize_name)
+        
+        # Find each player's actual first season across ALL available data
+        player_first_season = all_rosters.groupby('full_name_normalized')['season'].min().to_dict()
+        
+        print(f"  Found first seasons for {len(player_first_season)} players")
+        
+        # Add this mapping to the combined dataframe
+        combined['first_season'] = combined['full_name_normalized'].map(player_first_season)
+        
+        # Mark as rookie if this season equals their first season
+        combined['is_rookie'] = combined['season'] == combined['first_season']
+        
+        # For players with no stats history, use Sleeper's years_exp
+        combined.loc[combined['first_season'].isna(), 'is_rookie'] = combined.loc[combined['first_season'].isna(), 'years_exp'] == 0
+        
+        # Drop the helper column
+        combined.drop('first_season', axis=1, inplace=True)
+        
         # Fill NaN fantasy points and games with 0 for rookies/players without history
         numeric_columns = ['fantasy_points_ppr', 'games', 'completions', 'attempts',
                           'passing_yards', 'passing_tds', 'interceptions', 'carries',
@@ -330,6 +352,13 @@ class FantasyPlayerDataCollector:
         # Remove duplicates - keep first occurrence of each player-season
         combined = combined.drop_duplicates(subset=['player_id', 'season'], keep='first')
         
+        # Calculate points per game
+        combined['points_per_game'] = combined.apply(
+            lambda row: row['fantasy_points_ppr'] / row['games'] if row['games'] > 0 else 0,
+            axis=1
+        )
+        combined['points_per_game'] = combined['points_per_game'].round(2)
+        
         # Select final columns
         final_columns = [
             'first_name',
@@ -338,7 +367,6 @@ class FantasyPlayerDataCollector:
             'team',
             'season',
             'fantasy_points_ppr',
-            'points_per_game',
             'fantasy_adp',
             'age',
             'is_rookie',
@@ -355,7 +383,8 @@ class FantasyPlayerDataCollector:
             'receptions',
             'targets',
             'receiving_yards', 
-            'receiving_tds'
+            'receiving_tds',
+            'points_per_game'
         ]
         
         # Only keep columns that exist
@@ -365,18 +394,14 @@ class FantasyPlayerDataCollector:
         # Don't drop rows with missing fantasy points anymore (keep rookies with 0 points)
         result = result.dropna(subset=['first_name', 'last_name'])
         
-        # Calculate points per game
-        result['points_per_game'] = result.apply(
-            lambda row: row['fantasy_points_ppr'] / row['games'] if row['games'] > 0 else 0,
-            axis=1
-        )
-        result['points_per_game'] = result['points_per_game'].round(2)
-        
         # Fill NaN teams with 'FA' (Free Agent) temporarily
         result['team'] = result['team'].fillna('FA')
         
         # Remove free agents completely
         result = result[result['team'] != 'FA']
+        
+        # Remove all 2025 season data
+        result = result[result['season'] != 2025]
         
         # Sort by team, then season, then fantasy points
         result = result.sort_values(['first_name', 'last_name', 'season'], ascending=[True, True, False])
@@ -420,6 +445,13 @@ if __name__ == "__main__":
         ['first_name', 'last_name', 'position', 'season', 'fantasy_points_ppr', 'team']
     ]
     print(top_performers)
+    
+    # Verify rookie detection works
+    print("\n=== Sample Rookie Seasons ===")
+    rookie_sample = df[df['is_rookie'] == True].sort_values('season').head(10)[
+        ['first_name', 'last_name', 'season', 'is_rookie', 'fantasy_points_ppr']
+    ]
+    print(rookie_sample)
     
     # Save to CSV
     df.to_csv('nfl_player_data_with_history.csv', index=False)
