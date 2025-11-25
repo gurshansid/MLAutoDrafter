@@ -1,6 +1,5 @@
 """
-Fantasy Football Draft Simulator
-Simulates a snake draft with roster position limits
+Fantasy Football Draft Simulator - FIXED to use real ADP
 """
 
 import pandas as pd
@@ -25,22 +24,17 @@ class DraftSimulator:
         """
         self.player_data = pd.read_csv(player_data_path)
         self.n_teams = n_teams
-        self.n_rounds = n_rounds  # 9 rounds = 9 players per team
+        self.n_rounds = n_rounds
         
-        # Roster requirements:
-        # 1 QB, 2 RB, 2 WR, 1 TE, 1 K, 2 FLEX (RB/WR/TE)
-        # Total = 9 players
-        
-        # Maximum at each position (accounting for flex)
+        # Roster limits
         self.roster_limits = {
-            'QB': 1,   # Exactly 1 QB
-            'RB': 4,   # Up to 4 RB (2 starters + 2 flex)
-            'WR': 4,   # Up to 4 WR (2 starters + 2 flex)  
-            'TE': 3,   # Up to 3 TE (1 starter + 2 flex)
-            'K': 1     # Exactly 1 K
+            'QB': 1,
+            'RB': 4,
+            'WR': 4,
+            'TE': 3,
+            'K': 1
         }
         
-        # Minimum required at each position
         self.roster_minimums = {
             'QB': 1,
             'RB': 2,
@@ -54,23 +48,18 @@ class DraftSimulator:
         
     def reset_draft(self):
         """Reset draft to initial state"""
-        # Get most recent season data for each player
         self.available_players = self._prepare_player_pool()
         
-        # Initialize team rosters with position tracking
         self.rosters = {i: [] for i in range(self.n_teams)}
         self.roster_counts = {i: {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0, 'K': 0} 
                               for i in range(self.n_teams)}
         
-        # Track current pick
         self.current_round = 1
         self.current_pick = 0
-        
-        # Draft history
         self.draft_history = []
         
     def _prepare_player_pool(self):
-        """Prepare available players with ADP rankings"""
+        """Prepare available players with REAL pre-season ADP"""
         # Get most recent season for each player
         df = self.player_data.sort_values('season', ascending=False)
         df = df.drop_duplicates(subset=['first_name', 'last_name'], keep='first')
@@ -78,18 +67,33 @@ class DraftSimulator:
         # Filter out players with 0 points (unless rookies)
         df = df[(df['fantasy_points_ppr'] > 0) | (df['is_rookie'] == True)]
         
-        # Add simple ADP based on last season's points
-        df = df.sort_values('fantasy_points_ppr', ascending=False)
-        df['adp'] = range(1, len(df) + 1)
+        # CRITICAL FIX: Use REAL fantasy_adp if available
+        if 'fantasy_adp' in df.columns:
+            # For players with real ADP (< 999), use it
+            # For players without ADP, assign based on points but push them down
+            df['adp'] = df['fantasy_adp'].copy()
+            
+            # Players without real ADP get ranked by points but start after ADP 200
+            no_adp_mask = df['fantasy_adp'] >= 999
+            if no_adp_mask.sum() > 0:
+                # Sort players without ADP by fantasy points
+                no_adp_players = df[no_adp_mask].sort_values('fantasy_points_ppr', ascending=False)
+                # Assign them ADP starting from 200
+                df.loc[no_adp_mask, 'adp'] = 200 + np.arange(no_adp_mask.sum())
+        else:
+            # Fallback if no ADP column exists
+            df = df.sort_values('fantasy_points_ppr', ascending=False)
+            df['adp'] = range(1, len(df) + 1)
         
-        # Add some randomness to ADP for rookies
+        # Add some randomness to rookies' ADP (they're uncertain)
         rookie_mask = df['is_rookie'] == True
-        df.loc[rookie_mask, 'adp'] = df.loc[rookie_mask, 'adp'].apply(
-            lambda x: x + random.randint(20, 100)
-        )
+        if rookie_mask.sum() > 0:
+            df.loc[rookie_mask, 'adp'] = df.loc[rookie_mask, 'adp'].apply(
+                lambda x: x + random.randint(-20, 50) if x < 200 else x + random.randint(20, 100)
+            )
         
         # Add placeholder kickers if not in data
-        if 'K' not in df['position'].values:
+        if 'K' not in df['position'].values or df[df['position'] == 'K'].shape[0] < 12:
             kickers_data = []
             kicker_names = ['Justin Tucker', 'Harrison Butker', 'Tyler Bass', 'Evan McPherson', 
                            'Daniel Carlson', 'Jason Sanders', 'Jake Elliott', 'Brandon McManus',
@@ -101,10 +105,10 @@ class DraftSimulator:
                     'last_name': last,
                     'position': 'K',
                     'team': 'FA',
-                    'fantasy_points_ppr': 150 - (i * 5),
+                    'fantasy_points_ppr': 145 - (i * 3),  # Kickers score ~145 pts
                     'is_rookie': False,
                     'age': 28,
-                    'adp': 100 + i * 3
+                    'adp': 150 + i * 5  # Kickers drafted late
                 })
             kickers_df = pd.DataFrame(kickers_data)
             df = pd.concat([df, kickers_df], ignore_index=True)
@@ -127,50 +131,31 @@ class DraftSimulator:
         """Check if team can draft a player at this position"""
         current_count = self.roster_counts[team_id].get(position, 0)
         max_allowed = self.roster_limits.get(position, 0)
-        
         return current_count < max_allowed
     
     def get_team_needs(self, team_id: int) -> Dict[str, int]:
-        """
-        Get positions the team still needs
-        
-        Returns:
-            Dict of position -> priority (higher = more urgent)
-        """
+        """Get positions the team still needs (priority levels)"""
         needs = {}
         counts = self.roster_counts[team_id]
         picks_remaining = self.n_rounds - len([p for p in self.draft_history if p['team'] == team_id])
         
-        # Calculate how many more skill position players we need
         total_skill_players = counts['RB'] + counts['WR'] + counts['TE']
-        skill_players_needed = 8 - counts['QB'] - counts['K'] - total_skill_players  # 9 total - QB - K
+        skill_players_needed = 8 - counts['QB'] - counts['K'] - total_skill_players
         
-        # Priority 3: Absolutely must draft (minimums not met)
+        # Priority 3: Must draft (minimums not met)
         if counts['QB'] < 1 and picks_remaining <= (1 - counts['QB']):
             needs['QB'] = 3
         if counts['K'] < 1 and picks_remaining <= (1 - counts['K']):
             needs['K'] = 3
             
-        # Check if we're running out of picks for minimums
         min_still_needed = max(0, 2 - counts['RB']) + max(0, 2 - counts['WR']) + max(0, 1 - counts['TE'])
         
         if counts['RB'] < 2:
-            if picks_remaining <= min_still_needed:
-                needs['RB'] = 3
-            else:
-                needs['RB'] = 2
-                
+            needs['RB'] = 3 if picks_remaining <= min_still_needed else 2
         if counts['WR'] < 2:
-            if picks_remaining <= min_still_needed:
-                needs['WR'] = 3
-            else:
-                needs['WR'] = 2
-                
+            needs['WR'] = 3 if picks_remaining <= min_still_needed else 2
         if counts['TE'] < 1:
-            if picks_remaining <= min_still_needed + 1:
-                needs['TE'] = 3
-            else:
-                needs['TE'] = 1
+            needs['TE'] = 3 if picks_remaining <= min_still_needed + 1 else 1
         
         # Priority 1: Nice to have (for flex spots)
         if 'RB' not in needs and counts['RB'] < 4:
@@ -218,16 +203,14 @@ class DraftSimulator:
         # Calculate weights
         weights = []
         for idx, player in candidates.iterrows():
-            # Base weight from ADP
             base_weight = np.exp(-0.3 * list(candidates.index).index(idx))
             
-            # Apply need multiplier
             position_need = team_needs.get(player['position'], 0)
-            if position_need == 3:  # Must draft
+            if position_need == 3:
                 base_weight *= 10
-            elif position_need == 2:  # Should draft
+            elif position_need == 2:
                 base_weight *= 3
-            elif position_need == 1:  # Nice to have
+            elif position_need == 1:
                 base_weight *= 1.2
             
             # Kicker penalty in early rounds
@@ -283,7 +266,6 @@ class DraftSimulator:
         self.draft_history.append(pick_info)
         self.rosters[team_id].append(player)
         
-        # Update position count
         position = player['position']
         if position in self.roster_counts[team_id]:
             self.roster_counts[team_id][position] += 1
@@ -311,25 +293,14 @@ class DraftSimulator:
         return self.draft_history, self.rosters
     
     def get_starting_lineup(self, team_id: int) -> Dict[str, List]:
-        """
-        Determine optimal starting lineup
-        Returns dict with 'starters' and 'bench'
-        """
+        """Determine optimal starting lineup"""
         roster = self.rosters[team_id]
         lineup = {
-            'QB': [],
-            'RB': [],
-            'WR': [],
-            'TE': [],
-            'FLEX': [],
-            'K': [],
-            'bench': []
+            'QB': [], 'RB': [], 'WR': [], 'TE': [], 'FLEX': [], 'K': [], 'bench': []
         }
-    
-    # Track indices of assigned players
+        
         assigned_indices = set()
-    
-    # Sort players by position and points
+        
         qbs = sorted([p for p in roster if p['position'] == 'QB'], 
                     key=lambda x: x['fantasy_points_ppr'], reverse=True)
         rbs = sorted([p for p in roster if p['position'] == 'RB'],
@@ -340,12 +311,11 @@ class DraftSimulator:
                     key=lambda x: x['fantasy_points_ppr'], reverse=True)
         ks = sorted([p for p in roster if p['position'] == 'K'],
                     key=lambda x: x['fantasy_points_ppr'], reverse=True)
-    
-    # Fill required positions and track assigned players by index
+        
         if qbs: 
             lineup['QB'] = qbs[:1]
             for p in qbs[:1]:
-                assigned_indices.add(p.name)  # p.name is the DataFrame index
+                assigned_indices.add(p.name)
         if rbs: 
             lineup['RB'] = rbs[:2]
             for p in rbs[:2]:
@@ -362,21 +332,19 @@ class DraftSimulator:
             lineup['K'] = ks[:1]
             for p in ks[:1]:
                 assigned_indices.add(p.name)
-    
-    # Determine flex players (best remaining RB/WR/TE)
+        
         flex_candidates = []
         if len(rbs) > 2: flex_candidates.extend(rbs[2:])
         if len(wrs) > 2: flex_candidates.extend(wrs[2:])
         if len(tes) > 1: flex_candidates.extend(tes[1:])
-    
+        
         flex_candidates.sort(key=lambda x: x['fantasy_points_ppr'], reverse=True)
         lineup['FLEX'] = flex_candidates[:2]
         for p in flex_candidates[:2]:
             assigned_indices.add(p.name)
-    
-    # Everyone not assigned is bench - compare by index
+        
         lineup['bench'] = [p for p in roster if p.name not in assigned_indices]
-    
+        
         return lineup
     
     def calculate_roster_score(self, team_id: int) -> float:
@@ -412,7 +380,6 @@ class DraftSimulator:
         print(f"\nPosition counts: QB:{counts['QB']} RB:{counts['RB']} WR:{counts['WR']} TE:{counts['TE']} K:{counts['K']}")
         print(f"Starting lineup points: {self.calculate_roster_score(team_id):.1f}")
         
-        # Check validity
         issues = []
         if counts['QB'] < 1: issues.append("Need QB")
         if counts['RB'] < 2: issues.append(f"Need {2-counts['RB']} RB")
@@ -424,42 +391,10 @@ class DraftSimulator:
             print(f"⚠️  Invalid roster: {', '.join(issues)}")
         else:
             print("✅ Valid roster!")
+            
     def evaluate_draft(self) -> Dict[int, float]:
-        """
-        Evaluate all teams' draft results
-    
-     Returns:
-         Dictionary of team_id -> total fantasy points
-     """
+        """Evaluate all teams' draft results"""
         scores = {}
         for team_id in range(self.n_teams):
             scores[team_id] = self.calculate_roster_score(team_id)
-    
         return scores
-
-
-# Example usage
-if __name__ == "__main__":
-    sim = DraftSimulator(
-        player_data_path='nfl_player_data_with_history.csv',
-        n_teams=12,
-        n_rounds=9  # 9 players per team
-    )
-    
-    print("Running 9-round draft simulation...")
-    history, rosters = sim.simulate_draft(our_team_id=0)
-    
-    # Show our team
-    sim.print_roster_summary(0)
-    
-    # Show another team
-    sim.print_roster_summary(6)
-    
-    # Final rankings
-    scores = sim.evaluate_draft()
-    print("\n=== Final Team Rankings (by starting lineup points) ===")
-    sorted_teams = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    for rank, (team_id, score) in enumerate(sorted_teams, 1):
-        print(f"{rank}. Team {team_id}: {score:.1f} points")
-    
-    print(f"\n✅ Draft completed: {len(history)} picks made")
