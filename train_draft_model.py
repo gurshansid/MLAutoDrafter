@@ -178,6 +178,12 @@ def train_model(model, num_episodes=100, learning_rate=0.001,
 
             best_score = max(best_score, our_score)
 
+            # --- PRINT OUR ROSTER AFTER EACH EPISODE ---
+            print("\n=== Roster After Episode", ep + 1, "===")
+            roster = simulator.rosters[our_position]
+            for i, p in enumerate(roster, start=1):
+                print(f"{i:2}. {p['position']:2} - {p['first_name']} {p['last_name']} ({p['team']})  ADP:{p['fantasy_adp']}")
+
             # --- PRINT EVERY EP ---
             avg_last = (
                 np.mean(episode_scores[-25:])
@@ -187,7 +193,7 @@ def train_model(model, num_episodes=100, learning_rate=0.001,
             avg_rank = np.mean(episode_ranks)
 
             print(
-                f"Ep {ep+1:4d}/{num_episodes} | "
+                f"\nEp {ep+1:4d}/{num_episodes} | "
                 f"Pos:{our_position+1:2d} | "
                 f"Score:{our_score:6.1f} | "
                 f"Rank:{our_rank:2d}/{n_teams} | "
