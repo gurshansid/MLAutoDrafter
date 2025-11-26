@@ -1,0 +1,8 @@
+requests
+pandas>=2.3.3
+numpy>=1.26.0
+nfl-data-py
+torch
+tensorflow
+scikit-learn
+matplotlib
