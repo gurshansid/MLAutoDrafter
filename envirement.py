@@ -322,8 +322,7 @@ def print_agent_roster(env: DraftEnvironment, team_id: int):
             print(f"    BENCH {name:<25} PPR={pts:6.1f}  ADP={adp:6.1f}")
 
 
-def print_league_roster_counts(env: DraftEnvironment):
-    """Print how many QBs/RBs/WRs/TEs each team drafted (for debugging)."""
+def v(env: DraftEnvironment):
     print("  League roster counts (current draft):")
     print("    Team |  QB  RB  WR  TE | Total")
     print("    ------------------------------")
